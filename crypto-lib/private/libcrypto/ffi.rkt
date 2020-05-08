@@ -701,27 +701,18 @@
         -> _int)
   #:wrap (err-wrap 'EVP_PKEY_CTX_ctrl))
 
-(define (EVP_PKEY_CTX_set_signature_md ctx md)
+(define (-EVP_PKEY_CTX_set_signature_md ctx md)
   (EVP_PKEY_CTX_ctrl ctx  -1 EVP_PKEY_OP_TYPE_SIG
                      EVP_PKEY_CTRL_MD 0 md))
 
-(define (EVP_PKEY_CTX_set_rsa_padding ctx pad)
+(define (-EVP_PKEY_CTX_set_rsa_padding ctx pad)
   (EVP_PKEY_CTX_ctrl ctx EVP_PKEY_RSA -1 EVP_PKEY_CTRL_RSA_PADDING pad #f))
-(define (EVP_PKEY_CTX_set_rsa_pss_saltlen ctx len)
+(define (-EVP_PKEY_CTX_set_rsa_pss_saltlen ctx len)
   (EVP_PKEY_CTX_ctrl ctx EVP_PKEY_RSA
                      (bitwise-ior EVP_PKEY_OP_SIGN EVP_PKEY_OP_VERIFY)
                      EVP_PKEY_CTRL_RSA_PSS_SALTLEN
                      len
                      #f))
-(define (EVP_PKEY_CTX_set_rsa_keygen_bits ctx bits)
-  (EVP_PKEY_CTX_ctrl ctx EVP_PKEY_RSA EVP_PKEY_OP_KEYGEN
-                     EVP_PKEY_CTRL_RSA_KEYGEN_BITS bits #f))
-(define (EVP_PKEY_CTX_set_rsa_keygen_pubexp ctx pubexp)
-  (EVP_PKEY_CTX_ctrl ctx EVP_PKEY_RSA EVP_PKEY_OP_KEYGEN
-                     EVP_PKEY_CTRL_RSA_KEYGEN_PUBEXP 0 pubexp))
-;;(define (EVP_PKEY_CTX_set_rsa_mgf1_md ctx md)
-;;  (EVP_PKEY_CTX_ctrl ctx EVP_PKEY_RSA EVP_PKEY_OP_TYPE_SIG
-;;                     EVP_PKEY_CTRL_RSA_MGF1_MD 0 md))
 
 (define EVP_PKEY_OP_PARAMGEN            (arithmetic-shift 1 1))
 (define EVP_PKEY_OP_KEYGEN              (arithmetic-shift 1 2))
@@ -750,10 +741,6 @@
 (define RSA_NO_PADDING          3)
 (define RSA_PKCS1_OAEP_PADDING  4)
 (define RSA_PKCS1_PSS_PADDING   6)
-
-(define (EVP_PKEY_CTX_set_dsa_paramgen_bits ctx nbits)
-  (EVP_PKEY_CTX_ctrl ctx EVP_PKEY_DSA EVP_PKEY_OP_PARAMGEN
-                     EVP_PKEY_CTRL_DSA_PARAMGEN_BITS nbits #f))
 
 (define EVP_PKEY_CTRL_DSA_PARAMGEN_BITS         (+ EVP_PKEY_ALG_CTRL 1))
 (define EVP_PKEY_CTRL_DSA_PARAMGEN_Q_BITS       (+ EVP_PKEY_ALG_CTRL 2))
@@ -1030,3 +1017,41 @@
 
 (define-crypto RAND_write_file
   (_fun _path -> _int))
+
+;; ============================================================
+;; OpenSSL 3 API
+
+(define _OPENSSL_CTX _pointer)
+
+(define-crypto EVP_MD_free
+  (_fun _EVP_MD -> _void)
+  #:wrap (deallocator))
+
+(define-crypto EVP_MD_fetch
+  (_fun _OPENSSL_CTX _string/utf-8 _string/utf-8
+        -> _EVP_MD/null)
+  #:wrap (allocator EVP_MD_free))
+
+
+(define-crypto EVP_CIPHER_free
+  (_fun _EVP_CIPHER -> _void)
+  #:wrap (deallocator))
+
+(define-crypto EVP_CIPHER_fetch
+  (_fun _OPENSSL_CTX _string/utf-8 _string/utf-8
+        -> _EVP_CIPHER/null)
+  #:wrap (allocator EVP_CIPHER_free))
+
+;; The following were macros in 1.x, became functions in 3.x.
+
+(define-crypto EVP_PKEY_CTX_set_signature_md
+  (_fun _EVP_PKEY_CTX _EVP_MD -> _int)
+  #:fail (K -EVP_PKEY_CTX_set_signature_md))
+
+(define-crypto EVP_PKEY_CTX_set_rsa_padding
+  (_fun _EVP_PKEY_CTX _int -> _int)
+  #:fail (K -EVP_PKEY_CTX_set_rsa_padding))
+
+(define-crypto EVP_PKEY_CTX_set_rsa_pss_saltlen
+  (_fun _EVP_PKEY_CTX _int -> _int)
+  #:fail (K -EVP_PKEY_CTX_set_rsa_pss_saltlen))

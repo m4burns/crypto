@@ -24,7 +24,9 @@
          "pkey.rkt"
          "kdf.rkt"
          "ffi.rkt")
-(provide libcrypto-factory)
+(provide libcrypto-factory
+         libcrypto1-factory
+         libcrypto3-factory)
 
 ;; Note: libcrypto ~1.1 has blake2s-256 and blake2b-512, limited (no
 ;; support for keys) so don't add here.
@@ -59,7 +61,7 @@
 
 ;; ============================================================
 
-(define libcrypto-factory%
+(define libcrypto1-factory%
   (class* factory-base% (factory<%>)
     (inherit get-digest get-cipher get-pk)
     (super-new [ok? libcrypto-ok?] [load-error libcrypto-load-error])
@@ -70,19 +72,23 @@
            (call-with-values (lambda () (parse-version (OpenSSL_version_num))) list)))
 
     (define/override (-get-digest info)
-      (let* ([spec (send info get-spec)]
-             [name-string (hash-ref libcrypto-digests spec #f)]
-             [evp (and name-string (EVP_get_digestbyname name-string))])
-        (and evp (new libcrypto-digest-impl% (info info) (factory this) (md evp)))))
+      (define evp (-get-digest-evp (send info get-spec)))
+      (and evp (new libcrypto-digest-impl% (info info) (factory this) (md evp))))
+
+    (define/public (-get-digest-evp spec)
+      (define name-string (hash-ref libcrypto-digests spec #f))
+      (and name-string (EVP_get_digestbyname name-string)))
 
     (define/override (-get-cipher info)
-      (define cipher-name (send info get-cipher-name))
-      (define mode (send info get-mode))
+      (define evp/s (-get-cipher-evp (send info get-cipher-name) (send info get-mode)))
+      (make-cipher info evp/s))
+
+    (define/public (-get-cipher-evp cipher-name mode)
       (case mode
         [(stream)
          (match (assq cipher-name libcrypto-ciphers)
            [(list _ '(stream) #f name-string)
-            (make-cipher info (EVP_get_cipherbyname name-string))]
+            (EVP_get_cipherbyname name-string)]
            [_ #f])]
         [else
          (match (assq cipher-name libcrypto-ciphers)
@@ -91,15 +97,19 @@
                  (cond [keys
                         (for/list ([key (in-list keys)])
                           (define s (format "~a-~a-~a" name-string key mode))
-                          (cons (quotient key 8)
-                                (make-cipher info (EVP_get_cipherbyname s))))]
+                          (cons (quotient key 8) (EVP_get_cipherbyname s)))]
                        [else
                         (define s (format "~a-~a" name-string mode))
-                        (make-cipher info (EVP_get_cipherbyname s))]))]
+                        (EVP_get_cipherbyname s)]))]
            [_ #f])]))
 
-    (define/private (make-cipher info evp)
-      (and evp (new libcrypto-cipher-impl% (info info) (factory this) (cipher evp))))
+    (define/private (make-cipher info evp/s)
+      (cond [(list? evp/s)
+             (for/list ([keylen+evp (in-list evp/s)] #:when (cdr keylen+evp))
+               (cons (car keylen+evp) (make-cipher info (cdr keylen+evp))))]
+            [evp/s
+             (new libcrypto-cipher-impl% (info info) (factory this) (cipher evp/s))]
+            [else #f]))
 
     (define/override (-get-pk spec)
       (case spec
@@ -173,4 +183,66 @@
       (void))
     ))
 
-(define libcrypto-factory (new libcrypto-factory%))
+;; ============================================================
+
+(define libcrypto3-factory%
+  (class libcrypto1-factory%
+    (super-new)
+
+    ;; The EVP_get{digest,cipher}byname interfaces still "work" in
+    ;; OpenSSL 3.0.0-alpha1, but they return EVP_{MD,CIPHER} objects
+    ;; that aren't fully "fetched", and fetching may fail when they're
+    ;; first used (eg, for legacy algorithms). So let's switch to
+    ;; eager fetching so we never falso report an impl is available
+    ;; when it isn't.
+
+    (define/override (-get-digest-evp spec)
+      (define name-string (hash-ref libcrypto-digests spec #f))
+      (and name-string (EVP_MD_fetch #f name-string #f)))
+
+    (define/override (-get-cipher-evp cipher-name mode)
+      (case mode
+        [(stream)
+         (match (assq cipher-name libcrypto-ciphers)
+           [(list _ '(stream) #f name-string)
+            (EVP_CIPHER_fetch #f name-string #f)]
+           [_ #f])]
+        [else
+         (match (assq cipher-name libcrypto-ciphers)
+           [(list _ modes keys name-string)
+            (and (memq mode modes)
+                 (cond [keys
+                        (for/list ([key (in-list keys)])
+                          (define s (format "~a-~a-~a" name-string key mode))
+                          (cons (quotient key 8) (EVP_CIPHER_fetch #f s #f)))]
+                       [else
+                        (define s (format "~a-~a" name-string mode))
+                        (EVP_CIPHER_fetch #f s #f)]))]
+           [_ #f])]))
+
+    ;; PK: In OpenSSL 3.0.0-alpha1 there are fetchable ASYM_CIPHER,
+    ;; SIGNATURE, and KEYEXCH types. But it's not clear those will
+    ;; remain, and it's not clear those are intended as the main
+    ;; interface for algorithms like RSA, which supports multiple
+    ;; operations. For now (FIXME), use the old interfaces and assume
+    ;; that the implicit fetch will succeed.
+
+    ;; KDF: OpenSSL 3.0.0-alpha1 adds a new KDF interface.
+
+    ;; ----
+
+    (define/override (print-lib-info)
+      (super print-lib-info)
+      (printf " OPENSSL 3 API\n"))
+    ))
+
+;; ============================================================
+
+(define libcrypto1-factory (new libcrypto1-factory%))
+(define libcrypto3-factory (new libcrypto3-factory%))
+
+(define libcrypto-factory
+  (cond [(and libcrypto-ok? (openssl-version>=? 3 0 0))
+         libcrypto3-factory]
+        [else
+         libcrypto1-factory]))
